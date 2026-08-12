@@ -1,6 +1,6 @@
 import unittest
 from app.services.analysis import analyse, parse_number
-from app.services.search import build_finn_url, build_query, infer_car, parse_results, valid_listing_url
+from app.services.search import _parse_ddg, build_finn_url, build_query, infer_car, parse_results, search_queries, valid_listing_url
 
 class AppTests(unittest.TestCase):
     def test_parse_number(self): self.assertEqual(parse_number("399 000 kr"), 399000)
@@ -14,6 +14,10 @@ class AppTests(unittest.TestCase):
     def test_infer_car_from_indexed_title(self):
         items=[{"url":"https://www.finn.no/mobility/item/123","title":"Volvo XC60 T8 2020 til salgs","description":""}]
         self.assertEqual(infer_car(items,"https://www.finn.no/mobility/item/123"), {"make":"Volvo","model":"XC60 T8","year":2020})
+    def test_analysis_without_target_price(self): self.assertEqual(analyse({}, [{"price": 400000}])["market_price"], 400000)
+    def test_broader_search_fallbacks(self): self.assertEqual(len(search_queries({"make":"Volvo","model":"XC60","year":2020})), 3)
+    def test_duckduckgo_parser(self):
+        page='<a class="result__a" href="https://www.finn.no/mobility/item/123">Volvo XC60</a><div class="result__snippet">399 000 kr</div>'
+        self.assertEqual(_parse_ddg(page)[0]["description"], "399 000 kr")
 
 if __name__ == "__main__": unittest.main()
-

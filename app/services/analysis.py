@@ -18,7 +18,7 @@ def analyse(car: dict, listings: list[dict]) -> dict:
     market = int(median(prices)) if prices else None
     target_price = car.get("price")
     difference = target_price - market if market and target_price else None
-    percent = round(difference / market * 100) if market else None
+    percent = round(difference / market * 100) if difference is not None and market else None
     if percent is None:
         verdict, tone = ("Estimert markedspris", "neutral") if market else ("Trenger sammenligningsgrunnlag", "neutral")
     elif percent <= -10:
@@ -28,4 +28,3 @@ def analyse(car: dict, listings: list[dict]) -> dict:
     else:
         verdict, tone = "Nær markedspris", "neutral"
     return {"car": car, "listings": listings, "count": len(prices), "market_price": market, "difference": difference, "percent": percent, "verdict": verdict, "tone": tone}
-

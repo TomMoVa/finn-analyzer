@@ -3,12 +3,14 @@ from __future__ import annotations
 import html
 import os
 import re
+import xml.etree.ElementTree as ET
 from urllib.parse import urlencode, urlparse
 
 import httpx
 
 BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
 DDG_URL = "https://html.duckduckgo.com/html/"
+BING_URL = "https://www.bing.com/search"
 
 
 class SearchError(RuntimeError):
@@ -80,9 +82,28 @@ async def _search(client: httpx.AsyncClient, query: str, api_key: str | None) ->
         response = await client.get(BRAVE_URL, params={"q": query, "count": 20}, headers={"X-Subscription-Token": api_key})
         response.raise_for_status()
         return response.json().get("web", {}).get("results", [])
-    response = await client.get(DDG_URL, params={"q": query, "kl": "no-no"})
+    try:
+        response = await client.get(DDG_URL, params={"q": query, "kl": "no-no"})
+        response.raise_for_status()
+        items = _parse_ddg(response.text)
+        if items:
+            return items
+    except httpx.HTTPError:
+        pass
+    response = await client.get(BING_URL, params={"q": query, "format": "rss", "setlang": "nb-NO"})
     response.raise_for_status()
-    return _parse_ddg(response.text)
+    root = ET.fromstring(response.text)
+    return [{"title": item.findtext("title", ""), "url": item.findtext("link", ""), "description": item.findtext("description", "")} for item in root.findall(".//item")]
+
+
+def search_queries(car: dict) -> list[str]:
+    exact = build_query(car)
+    make_model = " ".join(str(car.get(key, "")).strip() for key in ("make", "model") if car.get(key))
+    queries = [exact]
+    if make_model:
+        queries.append(f'site:finn.no/mobility/item "{make_model}" "kr"')
+        queries.append(f'site:finn.no "{make_model}" bruktbil pris')
+    return list(dict.fromkeys(queries))
 
 
 def infer_car(items: list[dict], listing_url: str) -> dict:
@@ -107,7 +128,9 @@ async def search_comparables(car: dict) -> list[dict]:
                 seed = await _search(client, f'"{listing_url}"', api_key)
                 for key, value in infer_car(seed, listing_url).items():
                     car[key] = car.get(key) or value
-            items = await _search(client, build_query(car), api_key)
+            items = []
+            for query in search_queries(car):
+                items.extend(await _search(client, query, api_key))
     except (httpx.HTTPError, ValueError):
         return []
     return [item for item in parse_results(items, car) if item["url"] != car.get("listing_url")]
