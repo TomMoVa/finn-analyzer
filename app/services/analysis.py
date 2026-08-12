@@ -16,10 +16,11 @@ def parse_number(value: str | int | float) -> int:
 def analyse(car: dict, listings: list[dict]) -> dict:
     prices = [int(item["price"]) for item in listings if item.get("price", 0) > 0]
     market = int(median(prices)) if prices else None
-    difference = car["price"] - market if market else None
+    target_price = car.get("price")
+    difference = target_price - market if market and target_price else None
     percent = round(difference / market * 100) if market else None
     if percent is None:
-        verdict, tone = "Trenger sammenligningsgrunnlag", "neutral"
+        verdict, tone = ("Estimert markedspris", "neutral") if market else ("Trenger sammenligningsgrunnlag", "neutral")
     elif percent <= -10:
         verdict, tone = "Lav pris mot markedet", "good"
     elif percent >= 10:
@@ -27,5 +28,4 @@ def analyse(car: dict, listings: list[dict]) -> dict:
     else:
         verdict, tone = "Nær markedspris", "neutral"
     return {"car": car, "listings": listings, "count": len(prices), "market_price": market, "difference": difference, "percent": percent, "verdict": verdict, "tone": tone}
-
 

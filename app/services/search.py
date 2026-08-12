@@ -16,8 +16,12 @@ class SearchError(RuntimeError):
 
 
 def build_query(car: dict) -> str:
-    parts = ["site:finn.no/mobility/item", car.get("make", ""), car.get("model", ""), str(car.get("year", "")), car.get("fuel", "")]
-    return " ".join(part.strip() for part in parts if str(part).strip())
+    parts = ["site:finn.no/mobility/item", car.get("make"), car.get("model"), car.get("year"), car.get("fuel")]
+    return " ".join(str(part).strip() for part in parts if part not in (None, ""))
+
+
+def valid_listing_url(value: str) -> str | None:
+    return _normalise_url(value.strip())
 
 
 def build_finn_url(car: dict) -> str:
@@ -54,7 +58,7 @@ def parse_results(items: list[dict], car: dict) -> list[dict]:
         description = html.unescape(re.sub(r"<[^>]+>", " ", item.get("description", ""))).strip()
         url, haystack = _normalise_url(item.get("url", "")), f"{title} {description}".lower()
         price = _number(haystack)
-        if not url or url in seen or not price or not all(word in haystack for word in wanted):
+        if not url or url in seen or not price or (wanted and not all(word in haystack for word in wanted)):
             continue
         year_match = re.search(r"\b(19\d{2}|20\d{2})\b", haystack)
         found_year = int(year_match.group(1)) if year_match else None
@@ -65,21 +69,45 @@ def parse_results(items: list[dict], car: dict) -> list[dict]:
     return output[:12]
 
 
+def _parse_ddg(page: str) -> list[dict]:
+    links = re.findall(r'class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', page, re.I | re.S)
+    snippets = re.findall(r'class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</(?:a|div)>', page, re.I | re.S)
+    return [{"url": url, "title": title, "description": snippets[i] if i < len(snippets) else ""} for i, (url, title) in enumerate(links)]
+
+
+async def _search(client: httpx.AsyncClient, query: str, api_key: str | None) -> list[dict]:
+    if api_key:
+        response = await client.get(BRAVE_URL, params={"q": query, "count": 20}, headers={"X-Subscription-Token": api_key})
+        response.raise_for_status()
+        return response.json().get("web", {}).get("results", [])
+    response = await client.get(DDG_URL, params={"q": query, "kl": "no-no"})
+    response.raise_for_status()
+    return _parse_ddg(response.text)
+
+
+def infer_car(items: list[dict], listing_url: str) -> dict:
+    for item in items:
+        if _normalise_url(item.get("url", "")) != listing_url:
+            continue
+        title = html.unescape(re.sub(r"<[^>]+>", " ", item.get("title", ""))).strip()
+        year = re.search(r"\b(19\d{2}|20\d{2})\b", title)
+        prefix = title[:year.start()] if year else title
+        words = [w for w in re.findall(r"[A-Za-zÀ-ÿ0-9-]+", prefix) if w.lower() not in {"finn", "no", "til", "salgs"}]
+        return {"make": words[0] if words else "", "model": " ".join(words[1:3]), "year": int(year.group(1)) if year else None}
+    return {}
+
+
 async def search_comparables(car: dict) -> list[dict]:
     headers = {"User-Agent": "FINN-Analyzer/1.0 (+personal market research)"}
     try:
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=True, headers=headers) as client:
             api_key = os.getenv("BRAVE_SEARCH_API_KEY")
-            if api_key:
-                response = await client.get(BRAVE_URL, params={"q": build_query(car), "count": 20}, headers={**headers, "X-Subscription-Token": api_key})
-                response.raise_for_status()
-                items = response.json().get("web", {}).get("results", [])
-            else:
-                response = await client.post(DDG_URL, data={"q": build_query(car), "kl": "no-no"})
-                response.raise_for_status()
-                items = [{"url": u, "title": t, "description": d} for u, t, d in re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?class="result__snippet"[^>]*>(.*?)</(?:a|div)>', response.text, re.I | re.S)]
+            listing_url = car.get("listing_url")
+            if listing_url and not (car.get("make") and car.get("model")):
+                seed = await _search(client, f'"{listing_url}"', api_key)
+                for key, value in infer_car(seed, listing_url).items():
+                    car[key] = car.get(key) or value
+            items = await _search(client, build_query(car), api_key)
     except (httpx.HTTPError, ValueError):
         return []
-    return parse_results(items, car)
-
-
+    return [item for item in parse_results(items, car) if item["url"] != car.get("listing_url")]
